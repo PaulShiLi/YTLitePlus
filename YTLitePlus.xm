@@ -38,6 +38,9 @@ static BOOL IsEnabled(NSString *key) {
     return [[NSUserDefaults standardUserDefaults] boolForKey:key];
 }
 
+# pragma mark - Tweaks
+
+// Activate FLEX
 %hook YTAppDelegate
 - (BOOL)application:(UIApplication *)application
     didFinishLaunchingWithOptions:(NSDictionary<UIApplicationLaunchOptionsKey, id> *)launchOptions {
@@ -57,7 +60,23 @@ static BOOL IsEnabled(NSString *key) {
 }
 %end
 
-# pragma mark - Tweaks
+// Enable Alternate Icons
+%hook UIApplication
+- (BOOL)supportsAlternateIcons {
+    return YES;
+}
+%end
+
+// Fix Google Sign in by @PoomSmart and @level3tjg (qnblackcat/uYouPlus#684)
+%hook NSBundle
+- (NSDictionary *)infoDictionary {
+    NSMutableDictionary *info = %orig.mutableCopy;
+    if ([self isEqual:NSBundle.mainBundle])
+        info[@"CFBundleIdentifier"] = @"com.google.ios.youtube";
+    return info;
+}
+%end
+
 // Skips content warning before playing *some videos - @PoomSmart
 %hook YTPlayabilityResolutionUserActionUIController
 - (void)showConfirmAlert { [self confirmAlertDidPressConfirm]; }
@@ -329,18 +348,28 @@ static BOOL IsEnabled(NSString *key) {
 
 // YTUnShorts - https://github.com/PoomSmart/YTUnShorts
 %hook YTIElementRenderer
+
+static NSData *cellDividerData = nil;
+
 - (NSData *)elementData {
     NSString *description = [self description];
+    
     if (IsEnabled(@"UnShorts_enabled")) {
-        if ([description containsString:@"shorts_shelf.eml"] ||
-            [description containsString:@"#shorts"] ||
-            [description containsString:@"shorts_video_cell.eml"] ||
-            [description containsString:@"6Shorts"]) {
-            if (![description containsString:@"history*"]) {
-                return nil;
-            }
+        if ([description containsString:@"cell_divider"]) {
+            if (!cellDividerData) cellDividerData = %orig;
+            return cellDividerData;
         }
+
+        BOOL hasShorts = ([description containsString:@"shorts_shelf.eml"] || 
+                          [description containsString:@"shorts_video_cell.eml"] || 
+                          [description containsString:@"6Shorts"]) && 
+                         ![description containsString:@"history*"];
+        BOOL hasShortsInHistory = [description containsString:@"compact_video.eml"] && 
+                                  [description containsString:@"youtube_shorts_"];
+
+        if (hasShorts || hasShortsInHistory) return cellDividerData;
     }
+
 // Hide Community Posts - @michael-winay & @arichorn
     if (IsEnabled(@"hideCommunityPosts_enabled")) {
         if ([description containsString:@"post_base_wrapper.eml"]) {
