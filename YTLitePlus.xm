@@ -33,11 +33,6 @@ static NSString *accessGroupID() {
     return accessGroup;
 }
 
-//
-static BOOL IsEnabled(NSString *key) {
-    return [[NSUserDefaults standardUserDefaults] boolForKey:key];
-}
-
 # pragma mark - Tweaks
 
 // Activate FLEX
@@ -45,17 +40,15 @@ static BOOL IsEnabled(NSString *key) {
 - (BOOL)application:(UIApplication *)application
     didFinishLaunchingWithOptions:(NSDictionary<UIApplicationLaunchOptionsKey, id> *)launchOptions {
     BOOL didFinishLaunching = %orig;
-
-    if (IsEnabled(@"flex_enabled")) {
-        [[FLEXManager sharedManager] showExplorer];
+	if (IsEnabled(@"flex_enabled")) {
+        [[%c(FLEXManager) performSelector:@selector(sharedManager)] performSelector:@selector(showExplorer)];
     }
-
     return didFinishLaunching;
 }
 - (void)appWillResignActive:(id)arg1 {
     %orig;
-        if (IsEnabled(@"flex_enabled")) {
-        [[FLEXManager sharedManager] showExplorer];
+	if (IsEnabled(@"flex_enabled")) {
+        [[%c(FLEXManager) performSelector:@selector(sharedManager)] performSelector:@selector(showExplorer)];
     }
 }
 %end
@@ -67,15 +60,40 @@ static BOOL IsEnabled(NSString *key) {
 }
 %end
 
-// Fix Google Sign in by @PoomSmart and @level3tjg (qnblackcat/uYouPlus#684)
+/* TEMP-DISABLED
+// Fix Google Sign in by @PoomSmart, @level3tjg & Dayanch96 (qnblackcat/uYouPlus#684)
+BOOL isSelf() {
+    NSArray *address = [NSThread callStackReturnAddresses];
+    Dl_info info = {0};
+    if (dladdr((void *)[address[2] longLongValue], &info) == 0) return NO;
+    NSString *path = [NSString stringWithUTF8String:info.dli_fname];
+    return [path hasPrefix:NSBundle.mainBundle.bundlePath];
+}
 %hook NSBundle
+- (NSString *)bundleIdentifier {
+    return isSelf() ? "com.google.ios.youtube" : %orig;
+}
 - (NSDictionary *)infoDictionary {
-    NSMutableDictionary *info = %orig.mutableCopy;
-    if ([self isEqual:NSBundle.mainBundle])
-        info[@"CFBundleIdentifier"] = @"com.google.ios.youtube";
+    NSDictionary *dict = %orig;
+    if (!isSelf())
+        return %orig;
+    NSMutableDictionary *info = [dict mutableCopy];
+    if (info[@"CFBundleIdentifier"]) info[@"CFBundleIdentifier"] = @"com.google.ios.youtube";
+    if (info[@"CFBundleDisplayName"]) info[@"CFBundleDisplayName"] = @"YouTube";
+    if (info[@"CFBundleName"]) info[@"CFBundleName"] = @"YouTube";
     return info;
 }
+- (id)objectForInfoDictionaryKey:(NSString *)key {
+    if (!isSelf())
+        return %orig;
+    if ([key isEqualToString:@"CFBundleIdentifier"])
+        return @"com.google.ios.youtube";
+    if ([key isEqualToString:@"CFBundleDisplayName"] || [key isEqualToString:@"CFBundleName"])
+        return @"YouTube";
+    return %orig;
+}
 %end
+*/
 
 // Skips content warning before playing *some videos - @PoomSmart
 %hook YTPlayabilityResolutionUserActionUIController
@@ -90,12 +108,8 @@ static BOOL IsEnabled(NSString *key) {
 }
 %end
 
-# pragma mark - Hide SponsorBlock Button
+// Hide SponsorBlock Button in navigation bar
 %hook YTRightNavigationButtons
-- (void)didMoveToWindow {
-    %orig;
-}
-
 - (void)layoutSubviews {
     %orig;
     if (IsEnabled(@"hideSponsorBlockButton_enabled")) { 
@@ -161,7 +175,7 @@ static BOOL IsEnabled(NSString *key) {
 - (BOOL)commercePlatformClientEnablePopupWebviewInWebviewDialogController { return NO;}
 %end
 
-// Hide Upgrade Dialog - @arichorn
+// Hide Upgrade Dialog - @arichornlover
 %hook YTGlobalConfig
 - (BOOL)shouldBlockUpgradeDialog { return YES;}
 - (BOOL)shouldForceUpgrade { return NO;}
@@ -169,18 +183,95 @@ static BOOL IsEnabled(NSString *key) {
 - (BOOL)shouldShowUpgradeDialog { return NO;}
 %end
 
-// YTNoTracking - @arichorn - https://github.com/arichorn/YTNoTracking/
-%hook UIApplication
-- (BOOL)application:(UIApplication *)application openURL:(NSURL *)url options:(NSDictionary<UIApplicationOpenURLOptionsKey,id> *)options {
-    NSString *originalURLString = [url absoluteString];
-    NSString *modifiedURLString = [originalURLString stringByReplacingOccurrencesOfString:@"&si=[a-zA-Z0-9_-]+" withString:@"" options:NSRegularExpressionSearch range:NSMakeRange(0, originalURLString.length)];
-    NSURL *modifiedURL = [NSURL URLWithString:modifiedURLString];
-    BOOL result = %orig(application, modifiedURL, options);
-    return result;
+// Hide Speed Toast - @bhackel
+// YTLite Speed Toast
+%hook PlayerToast
+- (void)showPlayerToastWithText:(id)text 
+                          value:(CGFloat)value 
+                          style:(NSInteger)style 
+                         onView:(id)view 
+{
+    if (IsEnabled(@"hideSpeedToast_enabled")) {
+        return;
+    }
+    %orig;
+}
+%end
+// Default YouTube Speed Toast
+%hook YTInlinePlayerScrubUserEducationView
+- (void)setVisible:(BOOL)visible {
+    if (IsEnabled(@"hideSpeedToast_enabled")) {
+        return;
+    }
+    %orig;
 }
 %end
 
-// YTNoModernUI - @arichorn
+// Hide Home Tab - @bhackel
+%group gHideHomeTab
+%hook YTPivotBarView
+- (void)setRenderer:(YTIPivotBarRenderer *)renderer {
+    // Iterate over each renderer item
+    NSUInteger indexToRemove = -1;
+    NSMutableArray <YTIPivotBarSupportedRenderers *> *itemsArray = renderer.itemsArray;
+    for (NSUInteger i = 0; i < itemsArray.count; i++) {
+        YTIPivotBarSupportedRenderers *item = itemsArray[i];
+        // Check if this is the home tab button
+        YTIPivotBarItemRenderer *pivotBarItemRenderer = item.pivotBarItemRenderer;
+        NSString *pivotIdentifier = pivotBarItemRenderer.pivotIdentifier;
+        if ([pivotIdentifier isEqualToString:@"FEwhat_to_watch"]) {
+            // Remove the home tab button
+            indexToRemove = i;
+            break;
+        }
+    }
+    if (indexToRemove != -1) {
+        [itemsArray removeObjectAtIndex:indexToRemove];
+    }
+    %orig;
+}
+%end
+// Fix bug where contents of leftmost tab is replaced by Home tab
+BOOL isTabSelected = NO;
+%hook YTPivotBarViewController
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    if (!isTabSelected) {
+        // Get the identifier of the selected pivot
+        NSString *selectedPivotIdentifier = self.selectedPivotIdentifier;
+        // Find any different tab to switch from by looping through the renderer items
+        YTIPivotBarRenderer *renderer = self.renderer;
+        NSArray <YTIPivotBarSupportedRenderers *> *itemsArray = renderer.itemsArray;
+        for (YTIPivotBarSupportedRenderers *item in itemsArray) {
+            YTIPivotBarItemRenderer *pivotBarItemRenderer = item.pivotBarItemRenderer;
+            NSString *pivotIdentifier = pivotBarItemRenderer.pivotIdentifier;
+            if (![pivotIdentifier isEqualToString:selectedPivotIdentifier]) {
+                // Switch to this tab
+                [self selectItemWithPivotIdentifier:pivotIdentifier];
+                break;
+            }
+        }
+        // Clear any cached controllers to delete the broken home tab
+        [self resetViewControllersCache];
+        // Switch back to the original tab
+        [self selectItemWithPivotIdentifier:selectedPivotIdentifier];
+        // Update flag to not do it again
+        isTabSelected = YES;
+    }
+}
+%end
+%end
+
+// Disable fullscreen engagement overlay - @bhackel
+%group gDisableEngagementOverlay
+%hook YTFullscreenEngagementOverlayController
+- (void)setEnabled:(BOOL)enabled {
+    %orig(NO);
+}
+%end
+%end
+
+// YTNoModernUI - @arichornlover
 %group gYTNoModernUI
 %hook YTVersionUtils // YTNoModernUI Original Version
 + (NSString *)appVersion { return @"17.38.10"; }
@@ -223,14 +314,27 @@ static BOOL IsEnabled(NSString *key) {
 - (BOOL)cxClientEnableModernizedActionSheet { return NO; }
 - (BOOL)enableClientShortsSheetsModernization { return NO; }
 - (BOOL)enableTimestampModernizationForNative { return NO; }
-- (BOOL)modernizeElementsTextColor { return NO; }
-- (BOOL)modernizeElementsBgColor { return NO; }
+- (BOOL)mainAppCoreClientEnableModernIaFeedStretchBottom { return NO; }
+- (BOOL)mainAppCoreClientEnableModernIaFrostedBottomBar { return NO; }
+- (BOOL)mainAppCoreClientEnableModernIaFrostedPivotBar { return NO; }
+- (BOOL)mainAppCoreClientEnableModernIaFrostedPivotBarUpdatedBackdrop { return NO; }
+- (BOOL)mainAppCoreClientEnableModernIaFrostedTopBar { return NO; }
+- (BOOL)mainAppCoreClientEnableModernIaOpacityPivotBar { return NO; }
+- (BOOL)mainAppCoreClientEnableModernIaTopAndBottomBarIconRefresh { return NO; }
+- (BOOL)mainAppCoreClientEnableModernizedBedtimeReminderU18DefaultSettings { return NO; }
+- (BOOL)modernizeCameoNavbar { return NO; }
 - (BOOL)modernizeCollectionLockups { return NO; }
+- (BOOL)modernizeCollectionLockupsShowVideoCount { return NO; }
+- (BOOL)modernizeElementsBgColor { return NO; }
+- (BOOL)modernizeElementsTextColor { return NO; }
+- (BOOL)postsCreatorClientEnableModernButtonsUi { return NO; }
+- (BOOL)pullToFullModernEdu { return NO; }
+- (BOOL)showModernMiniplayerRedesign { return NO; }
 - (BOOL)uiSystemsClientGlobalConfigEnableModernButtonsForNative { return NO; }
 - (BOOL)uiSystemsClientGlobalConfigIosEnableModernTabsForNative { return NO; }
-- (BOOL)uiSystemsClientGlobalConfigIosEnableEpUxUpdates { return NO; }
-- (BOOL)uiSystemsClientGlobalConfigIosEnableSheetsUxUpdates { return NO; }
 - (BOOL)uiSystemsClientGlobalConfigIosEnableSnackbarModernization { return NO; }
+- (BOOL)uiSystemsClientGlobalConfigModernizeNativeBgColor { return NO; }
+- (BOOL)uiSystemsClientGlobalConfigModernizeNativeTextColor { return NO; }
 // Disable Rounded Content - YTNoModernUI
 - (BOOL)iosDownloadsPageRoundedThumbs { return NO; }
 - (BOOL)iosRoundedSearchBarSuggestZeroPadding { return NO; }
@@ -279,24 +383,6 @@ static BOOL IsEnabled(NSString *key) {
 %end
 %end
 
-%group gDisableAmbientMode
-%hook YTColdConfig
-- (BOOL)disableCinematicForLowPowerMode { return NO; }
-- (BOOL)enableCinematicContainer { return NO; }
-- (BOOL)enableCinematicContainerOnClient { return NO; }
-- (BOOL)enableCinematicContainerOnTablet { return NO; }
-- (BOOL)enableTurnOffCinematicForFrameWithBlackBars { return YES; }
-- (BOOL)enableTurnOffCinematicForVideoWithBlackBars { return YES; }
-- (BOOL)iosCinematicContainerClientImprovement { return NO; }
-- (BOOL)iosEnableGhostCardInlineTitleCinematicContainerFix { return NO; }
-- (BOOL)iosUseFineScrubberMosaicStoreForCinematic { return NO; }
-- (BOOL)mainAppCoreClientEnableClientCinematicPlaylists { return NO; }
-- (BOOL)mainAppCoreClientEnableClientCinematicPlaylistsPostMvp { return NO; }
-- (BOOL)mainAppCoreClientEnableClientCinematicTablets { return NO; }
-- (BOOL)iosEnableFullScreenAmbientMode { return NO; }
-%end
-%end
-
 // Hide YouTube Heatwaves in Video Player (YouTube v17.19.2-present) - @level3tjg - https://www.reddit.com/r/jailbreak/comments/v29yvk/
 %group gHideHeatwaves
 %hook YTInlinePlayerBarContainerView
@@ -341,53 +427,560 @@ static BOOL IsEnabled(NSString *key) {
 }
 %end
 
-// YTNOCheckLocalNetWork - https://poomsmart.github.io/repo/depictions/ytnochecklocalnetwork.html
+// Fix Casting: https://github.com/arichornlover/uYouEnhanced/issues/606#issuecomment-2098289942
+%group gFixCasting
+%hook YTColdConfig
+- (BOOL)cxClientEnableIosLocalNetworkPermissionReliabilityFixes { return YES; }
+- (BOOL)cxClientEnableIosLocalNetworkPermissionUsingSockets { return NO; }
+- (BOOL)cxClientEnableIosLocalNetworkPermissionWifiFixes { return YES; }
+%end
 %hook YTHotConfig
-- (BOOL)isPromptForLocalNetworkPermissionsEnabled { return NO; }
+- (BOOL)isPromptForLocalNetworkPermissionsEnabled { return YES; }
+%end
 %end
 
-// YTUnShorts - https://github.com/PoomSmart/YTUnShorts
-%hook YTIElementRenderer
+// Seek anywhere gesture - @bhackel
+%hook YTColdConfig
+- (BOOL)speedMasterArm2FastForwardWithoutSeekBySliding {
+    return IsEnabled(@"seekAnywhere_enabled") ? NO : %orig;
+}
+%end
 
-static NSData *cellDividerData = nil;
+// New Settings UI - @bhackel
+%hook YTColdConfig
+- (BOOL)mainAppCoreClientEnableCairoSettings { 
+    return IS_ENABLED(@"newSettingsUI_enabled"); 
+}
+%end
 
-- (NSData *)elementData {
-    NSString *description = [self description];
+// Fullscreen to the Right (iPhone-Exclusive) - @arichornlover & @bhackel
+// WARNING: Please turn off the “Portrait Fullscreen” or "iPad Layout" Option in YTLite while the option "Fullscreen to the Right" is enabled below.
+%group gFullscreenToTheRight
+%hook YTWatchViewController
+- (UIInterfaceOrientationMask)allowedFullScreenOrientations {
+    UIInterfaceOrientationMask orientations = UIInterfaceOrientationMaskLandscapeRight;
+    return orientations;
+}
+%end
+%end
+
+// YTTapToSeek - https://github.com/bhackel/YTTapToSeek
+%group gYTTapToSeek
+    %hook YTInlinePlayerBarContainerView
+    - (void)didPressScrubber:(id)arg1 {
+        %orig;
+        // Get access to the seekToTime method
+        YTMainAppVideoPlayerOverlayViewController *mainAppController = [self.delegate valueForKey:@"_delegate"];
+        YTPlayerViewController *playerViewController = [mainAppController valueForKey:@"parentViewController"];
+        // Get the X position of this tap from arg1
+        UIGestureRecognizer *gestureRecognizer = (UIGestureRecognizer *)arg1;
+        CGPoint location = [gestureRecognizer locationInView:self];
+        CGFloat x = location.x;
+        // Get the associated proportion of time using scrubRangeForScrubX
+        double timestampFraction = [self scrubRangeForScrubX:x];
+        // Get the timestamp from the fraction
+        double timestamp = [mainAppController totalTime] * timestampFraction;
+        // Jump to the timestamp
+        [playerViewController seekToTime:timestamp];
+    }
+    %end
+%end
+
+// Disable pull to enter vertical/portrait fullscreen gesture - @bhackel
+// This was introduced in version 19.XX
+// This does not apply to portrait videos
+%group gDisablePullToFull
+%hook YTWatchPullToFullController
+- (BOOL)shouldRecognizeOverscrollEventsFromWatchOverscrollController:(id)arg1 {
+    // Get the current player orientation
+    YTWatchViewController *watchViewController = (YTWatchViewController *) self.playerViewSource;
+    NSUInteger allowedFullScreenOrientations = [watchViewController allowedFullScreenOrientations];
+    // Check if the current player orientation is portrait
+    if (allowedFullScreenOrientations == UIInterfaceOrientationMaskAllButUpsideDown
+            || allowedFullScreenOrientations == UIInterfaceOrientationMaskPortrait
+            || allowedFullScreenOrientations == UIInterfaceOrientationMaskPortraitUpsideDown) {
+        return %orig;
+    } else {
+        return NO;
+    }
+}
+%end
+%end
+
+// Always use remaining time in the video player - @bhackel
+%hook YTPlayerBarController
+// When a new video is played, enable time remaining flag
+- (void)setActiveSingleVideo:(id)arg1 {
+    %orig;
+    if (IS_ENABLED(@"alwaysShowRemainingTime_enabled")) {
+        // Get the player bar view
+        YTInlinePlayerBarContainerView *playerBar = self.playerBar;
+        if (playerBar) {
+            // Enable the time remaining flag
+            playerBar.shouldDisplayTimeRemaining = YES;
+        }
+    }
+}
+%end
+
+// Disable toggle time remaining - @bhackel
+%hook YTInlinePlayerBarContainerView
+- (void)setShouldDisplayTimeRemaining:(BOOL)arg1 {
+    if (IS_ENABLED(@"disableRemainingTime_enabled")) {
+        // Set true if alwaysShowRemainingTime
+        if (IS_ENABLED(@"alwaysShowRemainingTime_enabled")) {
+            %orig(YES);
+        } else {
+            %orig(NO);
+        }
+        return;
+    }
+    %orig;
+}
+%end
+
+// Disable Ambient Mode - @bhackel
+%hook YTWatchCinematicContainerController
+- (BOOL)isCinematicLightingAvailable {
+    // Check if we are in fullscreen or not, then decide if ambient is disabled
+    YTWatchViewController *watchViewController = (YTWatchViewController *) self.parentResponder;
+    BOOL isFullscreen = watchViewController.fullscreen;
+    if (IsEnabled(@"disableAmbientModePortrait_enabled") && !isFullscreen) {
+        return NO;   
+    }
+    if (IsEnabled(@"disableAmbientModeFullscreen_enabled") && isFullscreen) {
+        return NO;
+    }
+    return %orig;
+}
+%end
+
+%hook _ASDisplayView
+- (void)didMoveToWindow {
+    %orig;
+
+    // Hide the Comment Section Previews under the Video Player - @arichornlover
+    if ((IsEnabled(@"hidePreviewCommentSection_enabled")) && ([self.accessibilityIdentifier isEqualToString:@"id.ui.comments_entry_point_teaser"])) {
+        self.hidden = YES;
+        self.opaque = YES;
+        self.userInteractionEnabled = NO;
+        CGRect bounds = self.frame;
+        bounds.size.height = 0;
+        self.frame = bounds;
+        [self.superview layoutIfNeeded];
+        [self setNeedsLayout];
+        [self removeFromSuperview];
+    }
+}
+%end
+
+// Hide Autoplay Mini Preview - @bhackel
+%hook YTAutonavPreviewView
+- (void)layoutSubviews {
+    %orig;
+    if (IsEnabled(@"hideAutoplayMiniPreview_enabled")) {
+        self.hidden = YES;
+    }
+}
+- (void)setHidden:(BOOL)arg1 {
+    if (IsEnabled(@"hideAutoplayMiniPreview_enabled")) {
+        %orig(YES);
+    } else {
+        %orig(arg1);
+    }
+}
+%end
+
+// Hide HUD Messages - @qnblackcat
+%hook YTHUDMessageView
+- (id)initWithMessage:(id)arg1 dismissHandler:(id)arg2 {
+    return IsEnabled(@"hideHUD_enabled") ? nil : %orig;
+}
+%end
+
+// Hide Video Player Collapse Button - @arichornlover
+%hook YTMainAppControlsOverlayView
+- (void)layoutSubviews {
+    %orig; 
+    if (IsEnabled(@"disableCollapseButton_enabled")) {  
+        if (self.watchCollapseButton) {
+            [self.watchCollapseButton removeFromSuperview];
+        }
+    }
+}
+- (BOOL)watchCollapseButtonHidden {
+    if (IsEnabled(@"disableCollapseButton_enabled")) {
+        return YES;
+    } else {
+        return %orig;
+    }
+}
+- (void)setWatchCollapseButtonAvailable:(BOOL)available {
+    if (IsEnabled(@"disableCollapseButton_enabled")) {
+    } else {
+        %orig(available);
+    }
+}
+%end
+
+// Gestures - @bhackel
+%group gPlayerGestures
+%hook YTWatchLayerViewController
+// invoked when the player view controller is either created or destroyed
+- (void)watchController:(YTWatchController *)watchController didSetPlayerViewController:(YTPlayerViewController *)playerViewController {
+    if (playerViewController) {
+        // check to see if the pan gesture is already created
+        if (!playerViewController.YTLitePlusPanGesture) {
+            playerViewController.YTLitePlusPanGesture = [[UIPanGestureRecognizer alloc] initWithTarget:playerViewController
+                                                                                               action:@selector(YTLitePlusHandlePanGesture:)];
+            playerViewController.YTLitePlusPanGesture.delegate = playerViewController;
+            [playerViewController.playerView addGestureRecognizer:playerViewController.YTLitePlusPanGesture];
+        }        
+    }
+    %orig;
+}
+%end
+
+
+%hook YTPlayerViewController
+// the pan gesture that will be created and added to the player view
+%property (nonatomic, retain) UIPanGestureRecognizer *YTLitePlusPanGesture;
+/**
+  * This method is called when the pan gesture is started, changed, or ended. It handles
+  * 12 different possible cases depending on the configuration: 3 zones with 4 choices
+  * for each zone. The zones are horizontal sections that divide the player into
+  * 3 equal parts. The choices are volume, brightness, seek, and disabled.
+  * There is also a deadzone that can be configured in the settings.
+  * There are 4 logical states: initial, changed in deadzone, changed, end.
+  */
+%new
+- (void)YTLitePlusHandlePanGesture:(UIPanGestureRecognizer *)panGestureRecognizer {
+    // Haptic feedback generator
+    static UIImpactFeedbackGenerator *feedbackGenerator;
+    // Variables for storing initial values to be adjusted
+    static float initialVolume;
+    static float initialBrightness;
+    static CGFloat initialTime;
+    // Flag to determine if the pan gesture is valid
+    static BOOL isValidHorizontalPan = NO;
+    // Variable to store the section of the screen the gesture is in
+    static GestureSection gestureSection = GestureSectionInvalid;
+    // Variable to track the start location of the whole pan gesture
+    static CGPoint startLocation;
+    // Variable to track the X translation when exiting the deadzone
+    static CGFloat deadzoneStartingXTranslation;
+    // Variable to track the X translation of the pan gesture after exiting the deadzone
+    static CGFloat adjustedTranslationX;
+    // Variable used to smooth out the X translation
+    static CGFloat smoothedTranslationX = 0;
+    // Constant for the filter constant to change responsiveness
+    // static const CGFloat filterConstant = 0.1;
+    // Constant for the deadzone radius that can be changed in the settings
+    static CGFloat deadzoneRadius = (CGFloat)GetFloat(@"playerGesturesDeadzone");
+    // Constant for the sensitivity factor that can be changed in the settings
+    static CGFloat sensitivityFactor = (CGFloat)GetFloat(@"playerGesturesSensitivity");
+    // Objects for modifying the system volume
+    static MPVolumeView *volumeView;
+    static UISlider *volumeViewSlider;
+    // Get objects that should only be initialized once
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        volumeView = [[MPVolumeView alloc] init];
+        for (UIView *view in volumeView.subviews) {
+            if ([view isKindOfClass:[UISlider class]]) {
+                volumeViewSlider = (UISlider *)view;
+                break;
+            }
+        }
+        feedbackGenerator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+    });
+    // Get objects used to seek nicely in the video player
+    static YTMainAppVideoPlayerOverlayViewController *mainVideoPlayerController = (YTMainAppVideoPlayerOverlayViewController *)self.childViewControllers.firstObject;
+    static YTPlayerBarController *playerBarController = mainVideoPlayerController.playerBarController;
+    static YTInlinePlayerBarContainerView *playerBar = playerBarController.playerBar;
+
+/***** Helper functions for adjusting player state *****/
+    // Helper function to adjust brightness
+    void (^adjustBrightness)(CGFloat, CGFloat) = ^(CGFloat translationX, CGFloat initialBrightness) {
+        float brightnessSensitivityFactor = 3;
+        float newBrightness = initialBrightness + ((translationX / 1000.0) * sensitivityFactor * brightnessSensitivityFactor);
+        newBrightness = fmaxf(fminf(newBrightness, 1.0), 0.0);
+        [[UIScreen mainScreen] setBrightness:newBrightness];
+    };
+
+    // Helper function to adjust volume
+    void (^adjustVolume)(CGFloat, CGFloat) = ^(CGFloat translationX, CGFloat initialVolume) {
+        float volumeSensitivityFactor = 3.0;
+        float newVolume = initialVolume + ((translationX / 1000.0) * sensitivityFactor * volumeSensitivityFactor);
+        newVolume = fmaxf(fminf(newVolume, 1.0), 0.0);
+        // Improve smoothness - ignore if the volume is within 0.01 of the current volume
+        CGFloat currentVolume = [[AVAudioSession sharedInstance] outputVolume];
+        if (fabs(newVolume - currentVolume) < 0.01 && currentVolume > 0.01 && currentVolume < 0.99) {
+            return;
+        }
+        // https://stackoverflow.com/questions/50737943/how-to-change-volume-programmatically-on-ios-11-4
+        
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.01 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            volumeViewSlider.value = newVolume;
+        });
+    };
+
+    // Helper function to adjust seek time
+    void (^adjustSeek)(CGFloat, CGFloat) = ^(CGFloat translationX, CGFloat initialTime) {
+        // Get the location in view for the current video time
+        CGFloat totalTime = self.currentVideoTotalMediaTime;
+        CGFloat videoFraction = initialTime / totalTime;
+        CGFloat initialTimeXPosition = [playerBar scrubXForScrubRange:videoFraction];
+        // Calculate the new seek X position
+        CGFloat sensitivityFactor = 1; // Adjust this value to make seeking more/less sensitive
+        CGFloat newSeekXPosition = initialTimeXPosition + translationX * sensitivityFactor;
+        // Create a CGPoint using this new X position
+        CGPoint newSeekPoint = CGPointMake(newSeekXPosition, 0);
+        // Send this to a seek method in the player bar controller
+        [playerBarController didScrubToPoint:newSeekPoint];
+    };
+
+    // Helper function to smooth out the X translation
+    // CGFloat (^applyLowPassFilter)(CGFloat) = ^(CGFloat newTranslation) {
+    //     smoothedTranslationX = filterConstant * newTranslation + (1 - filterConstant) * smoothedTranslationX;
+    //     return smoothedTranslationX;
+    // };
+
+/***** Helper functions for running the selected gesture *****/
+    // Helper function to run any setup for the selected gesture mode
+    void (^runSelectedGestureSetup)(NSString*) = ^(NSString *sectionKey) {
+        // Determine the selected gesture mode using the section key
+        GestureMode selectedGestureMode = (GestureMode)GetInteger(sectionKey);
+        // Handle the setup based on the selected mode
+        switch (selectedGestureMode) {
+            case GestureModeVolume:
+                initialVolume = [[AVAudioSession sharedInstance] outputVolume];
+                break;
+            case GestureModeBrightness:
+                initialBrightness = [UIScreen mainScreen].brightness;
+                break;
+            case GestureModeSeek:
+                initialTime = self.currentVideoMediaTime;
+                // Start a seek action
+                [playerBarController startScrubbing];
+                break;
+            case GestureModeDisabled:
+                // Do nothing if the gesture is disabled
+                break;
+            default:
+                // Show an alert if the gesture mode is invalid
+                UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Invalid Gesture Mode" message:@"Please report this bug." preferredStyle:UIAlertControllerStyleAlert];
+                UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil];
+                [alertController addAction:okAction];
+                [self presentViewController:alertController animated:YES completion:nil];
+                break;
+        }
+    };
     
-    if (IsEnabled(@"UnShorts_enabled")) {
-        if ([description containsString:@"cell_divider"]) {
-            if (!cellDividerData) cellDividerData = %orig;
-            return cellDividerData;
+    // Helper function to run the selected gesture action when the gesture changes
+    void (^runSelectedGestureChanged)(NSString*) = ^(NSString *sectionKey) {
+        // Determine the selected gesture mode using the section key
+        GestureMode selectedGestureMode = (GestureMode)GetInteger(sectionKey);
+        // Handle the gesture action based on the selected mode
+        switch (selectedGestureMode) {
+            case GestureModeVolume:
+                adjustVolume(adjustedTranslationX, initialVolume);
+                break;
+            case GestureModeBrightness:
+                adjustBrightness(adjustedTranslationX, initialBrightness);
+                break;
+            case GestureModeSeek:
+                adjustSeek(adjustedTranslationX, initialTime);
+                break;
+            case GestureModeDisabled:
+                // Do nothing if the gesture is disabled
+                break;
+            default:
+                // Show an alert if the gesture mode is invalid
+                UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Invalid Gesture Mode" message:@"Please report this bug." preferredStyle:UIAlertControllerStyleAlert];
+                UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil];
+                [alertController addAction:okAction];
+                [self presentViewController:alertController animated:YES completion:nil];
+                break;
         }
+    };
 
-        BOOL hasShorts = ([description containsString:@"shorts_shelf.eml"] || 
-                          [description containsString:@"shorts_video_cell.eml"] || 
-                          [description containsString:@"6Shorts"]) && 
-                         ![description containsString:@"history*"];
-        BOOL hasShortsInHistory = [description containsString:@"compact_video.eml"] && 
-                                  [description containsString:@"youtube_shorts_"];
+    // Helper function to run the selected gesture action when the gesture ends
+    void (^runSelectedGestureEnded)(NSString*) = ^(NSString *sectionKey) {
+        // Determine the selected gesture mode using the section key
+        GestureMode selectedGestureMode = (GestureMode)GetInteger(sectionKey);
+        // Handle the gesture action based on the selected mode
+        switch (selectedGestureMode) {
+            case GestureModeVolume:
+                break;
+            case GestureModeBrightness:
+                break;
+            case GestureModeSeek:
+                [playerBarController endScrubbingForSeekSource:0];
+                break;
+            case GestureModeDisabled:
+                break;
+            default:
+                // Show an alert if the gesture mode is invalid
+                UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Invalid Gesture Mode" message:@"Please report this bug." preferredStyle:UIAlertControllerStyleAlert];
+                UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil];
+                [alertController addAction:okAction];
+                [self presentViewController:alertController animated:YES completion:nil];
+                break;
+        }
+    };
+/***** End of Helper functions *****/
 
-        if (hasShorts || hasShortsInHistory) return cellDividerData;
+    // Handle gesture based on current gesture state
+    if (panGestureRecognizer.state == UIGestureRecognizerStateBegan) {
+        // Get the gesture's start position
+        startLocation = [panGestureRecognizer locationInView:self.view];
+        CGFloat viewHeight = self.view.bounds.size.height;
+        // Determine the section based on the start position by dividing the view into thirds
+        if (startLocation.y <= viewHeight / 3.0) {
+            gestureSection = GestureSectionTop;
+        } else if (startLocation.y <= 2 * viewHeight / 3.0) {
+            gestureSection = GestureSectionMiddle;
+        } else if (startLocation.y <= viewHeight) {
+            gestureSection = GestureSectionBottom;
+        } else {
+            gestureSection = GestureSectionInvalid;
+        }
+        // Cancel the gesture if the chosen mode for this section is disabled
+        if (       ((gestureSection == GestureSectionTop)    && (GetInteger(@"playerGestureTopSelection")    == GestureModeDisabled))
+                || ((gestureSection == GestureSectionMiddle) && (GetInteger(@"playerGestureMiddleSelection") == GestureModeDisabled))
+                || ((gestureSection == GestureSectionBottom) && (GetInteger(@"playerGestureBottomSelection") == GestureModeDisabled))) {
+            panGestureRecognizer.state = UIGestureRecognizerStateCancelled;
+            return;
+        }
+        // Deactive the activity flag
+        isValidHorizontalPan = NO;
+        // Cancel this gesture if it has not activated after 1 second
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (!isValidHorizontalPan && panGestureRecognizer.state != UIGestureRecognizerStateEnded) {
+                // Cancel the gesture by setting its state to UIGestureRecognizerStateCancelled
+                panGestureRecognizer.state = UIGestureRecognizerStateCancelled;
+            }
+        });
     }
 
-// Hide Community Posts - @michael-winay & @arichorn
-    if (IsEnabled(@"hideCommunityPosts_enabled")) {
-        if ([description containsString:@"post_base_wrapper.eml"]) {
-            return nil;
+    // Handle changed gesture state by activating the gesture once it has exited the deadzone,
+    // and then adjusting the player based on the selected gesture mode
+    if (panGestureRecognizer.state == UIGestureRecognizerStateChanged) {
+        // Determine if the gesture is predominantly horizontal
+        CGPoint translation = [panGestureRecognizer translationInView:self.view];
+        if (!isValidHorizontalPan) {
+            if (fabs(translation.x) > fabs(translation.y)) {
+                // Check if the touch has moved outside the deadzone
+                CGFloat distanceFromStart = hypot(translation.x, translation.y);
+                if (distanceFromStart < deadzoneRadius) {
+                    // If within the deadzone, don't activate the pan gesture
+                    return;
+                }
+                // If outside the deadzone, activate the pan gesture and store the initial values
+                isValidHorizontalPan = YES;
+                deadzoneStartingXTranslation = translation.x;
+                adjustedTranslationX = 0;
+                smoothedTranslationX = 0;
+                // Run the setup for the selected gesture mode
+                switch (gestureSection) {
+                    case GestureSectionTop:
+                        runSelectedGestureSetup(@"playerGestureTopSelection");
+                        break;
+                    case GestureSectionMiddle:
+                        runSelectedGestureSetup(@"playerGestureMiddleSelection");
+                        break;
+                    case GestureSectionBottom:
+                        runSelectedGestureSetup(@"playerGestureBottomSelection");
+                        break;
+                    default:
+                        // If the section is invalid, cancel the gesture
+                        panGestureRecognizer.state = UIGestureRecognizerStateCancelled;
+                        break;
+                }
+                // Provide haptic feedback to indicate a gesture start
+                if (IS_ENABLED(@"playerGesturesHapticFeedback_enabled")) {
+                    [feedbackGenerator prepare];
+                    [feedbackGenerator impactOccurred];
+                }
+            } else {
+                // Cancel the gesture if the translation is not horizontal
+                panGestureRecognizer.state = UIGestureRecognizerStateCancelled;
+                return;
+            }
+        }
+        
+        // Handle the gesture based on the identified section
+        if (isValidHorizontalPan) {
+            // Adjust the X translation based on the value hit after exiting the deadzone
+            adjustedTranslationX = translation.x - deadzoneStartingXTranslation;
+            // Smooth the translation value
+            // adjustedTranslationX = applyLowPassFilter(adjustedTranslationX);
+            // Pass the adjusted translation to the selected gesture
+            switch (gestureSection) {
+                case GestureSectionTop:
+                    runSelectedGestureChanged(@"playerGestureTopSelection");
+                    break;
+                case GestureSectionMiddle:
+                    runSelectedGestureChanged(@"playerGestureMiddleSelection");
+                    break;
+                case GestureSectionBottom:
+                    runSelectedGestureChanged(@"playerGestureBottomSelection");
+                    break;
+                default:
+                    // If the section is invalid, cancel the gesture
+                    panGestureRecognizer.state = UIGestureRecognizerStateCancelled;
+                    break;
+            }
         }
     }
-    return %orig;
+
+    // Handle the gesture end state by running the selected gesture mode's end action
+    if (panGestureRecognizer.state == UIGestureRecognizerStateEnded && isValidHorizontalPan) {
+        switch (gestureSection) {
+            case GestureSectionTop:
+                runSelectedGestureEnded(@"playerGestureTopSelection");
+                break;
+            case GestureSectionMiddle:
+                runSelectedGestureEnded(@"playerGestureMiddleSelection");
+                break;
+            case GestureSectionBottom:
+                runSelectedGestureEnded(@"playerGestureBottomSelection");
+                break;
+            default:
+                break;
+        }
+        // Provide haptic feedback upon successful gesture recognition
+        // [feedbackGenerator prepare];
+        // [feedbackGenerator impactOccurred];
+    }
+
+}
+// allow the pan gesture to be recognized simultaneously with other gestures
+%new
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
+    if ([gestureRecognizer isKindOfClass:[UIPanGestureRecognizer class]] && [otherGestureRecognizer isKindOfClass:[UIPanGestureRecognizer class]]) {
+        // Do not allow this gesture to activate with the normal seek bar gesture
+        YTMainAppVideoPlayerOverlayViewController *mainVideoPlayerController = (YTMainAppVideoPlayerOverlayViewController *)self.childViewControllers.firstObject;
+        YTPlayerBarController *playerBarController = mainVideoPlayerController.playerBarController;
+        YTInlinePlayerBarContainerView *playerBar = playerBarController.playerBar;
+        if (otherGestureRecognizer == playerBar.scrubGestureRecognizer) {
+            return NO;
+        }
+        // Do not allow this gesture to activate with the fine scrubber gesture
+        YTFineScrubberFilmstripView *fineScrubberFilmstrip = playerBar.fineScrubberFilmstrip;
+        if (!fineScrubberFilmstrip) {
+            return YES;
+        }
+        YTFineScrubberFilmstripCollectionView *filmstripCollectionView = [fineScrubberFilmstrip valueForKey:@"_filmstripCollectionView"];
+        if (filmstripCollectionView && otherGestureRecognizer == filmstripCollectionView.panGestureRecognizer) {
+            return NO;
+        }
+
+    }
+    return YES;
 }
 %end
-
-// YTNoSuggestedVideo - https://github.com/bhackel/YTNoSuggestedVideo
-%hook YTMainAppVideoPlayerOverlayViewController
-- (bool)shouldShowAutonavEndscreen {
-    if (IsEnabled(@"noSuggestedVideo_enabled")) {
-        return false;
-    }
-    return %orig;
-}
 %end
 
 // BigYTMiniPlayer: https://github.com/Galactic-Dev/BigYTMiniPlayer
@@ -415,66 +1008,97 @@ static NSData *cellDividerData = nil;
 %end
 %end
 
-// YTSpeed - https://github.com/Lyvendia/YTSpeed
-%group gYTSpeed
-%hook YTVarispeedSwitchController
-- (id)init {
-	id result = %orig;
-
-	const int size = 17;
-        float speeds[] = {0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5, 3.75, 4.0, 5.0};
-        id varispeedSwitchControllerOptions[size];
-
-	for (int i = 0; i < size; ++i) {
-		id title = [NSString stringWithFormat:@"%.2fx", speeds[i]];
-		varispeedSwitchControllerOptions[i] = [[%c(YTVarispeedSwitchControllerOption) alloc] initWithTitle:title rate:speeds[i]];
-	}
-
-	NSUInteger count = sizeof(varispeedSwitchControllerOptions) / sizeof(id);
-	NSArray *varispeedArray = [NSArray arrayWithObjects:varispeedSwitchControllerOptions count:count];
-	MSHookIvar<NSArray *>(self, "_options") = varispeedArray;
-
-	return result;
+// Video player button in the navigation bar - @bhackel
+// This code is based on the iSponsorBlock button code
+%group gVideoPlayerButton
+NSInteger pageStyle = 0;
+%hook YTRightNavigationButtons
+%property (retain, nonatomic) YTQTMButton *videoPlayerButton;
+- (NSMutableArray *)buttons {
+    NSMutableArray *retVal = %orig.mutableCopy;
+    [self.videoPlayerButton removeFromSuperview];
+    [self addSubview:self.videoPlayerButton];
+    if (!self.videoPlayerButton || pageStyle != [%c(YTPageStyleController) pageStyle]) {
+        self.videoPlayerButton = [%c(YTQTMButton) iconButton];
+	    [self.videoPlayerButton enableNewTouchFeedback];
+        self.videoPlayerButton.frame = CGRectMake(0, 0, 40, 40);
+        
+        if ([%c(YTPageStyleController) pageStyle]) { //dark mode
+            [self.videoPlayerButton setImage:[UIImage imageWithContentsOfFile:[tweakBundle pathForResource:@"YTLitePlusColored-128" ofType:@"png"]] forState:UIControlStateNormal];
+        }
+        else { // light mode
+            [self.videoPlayerButton setImage:[UIImage imageWithContentsOfFile:[tweakBundle pathForResource:@"YTLitePlusColored-128" ofType:@"png"]] forState:UIControlStateNormal];
+            // UIImage *image = [UIImage imageWithContentsOfFile:[tweakBundle pathForResource:@"YTLitePlusColored-128" ofType:@"png"]];
+            // image = [image imageWithTintColor:UIColor.blackColor renderingMode:UIImageRenderingModeAlwaysTemplate];
+            // [self.videoPlayerButton setImage:image forState:UIControlStateNormal];
+            // [self.videoPlayerButton setTintColor:UIColor.blackColor];
+        }
+        pageStyle = [%c(YTPageStyleController) pageStyle];
+        
+        [self.videoPlayerButton addTarget:self action:@selector(videoPlayerButtonPressed:) forControlEvents:UIControlEventTouchUpInside];
+        [retVal insertObject:self.videoPlayerButton atIndex:0];
+    }
+    return retVal;
 }
-%end
-
-%hook MLHAMQueuePlayer
-- (void)setRate:(float)rate {
-	MSHookIvar<float>(self, "_rate") = rate;
-	MSHookIvar<float>(self, "_preferredRate") = rate;
-
-	id player = MSHookIvar<HAMPlayerInternal *>(self, "_player");
-	[player setRate: rate];
-	
-	id stickySettings = MSHookIvar<MLPlayerStickySettings *>(self, "_stickySettings");
-	[stickySettings setRate: rate];
-
-	[self.playerEventCenter broadcastRateChange: rate];
-
-	YTSingleVideoController *singleVideoController = self.delegate;
-	[singleVideoController playerRateDidChange: rate];
+- (NSMutableArray *)visibleButtons {
+    NSMutableArray *retVal = %orig.mutableCopy;
+    
+    // fixes button overlapping yt logo on smaller devices
+    [self setLeadingPadding:-10];
+    if (self.videoPlayerButton) {
+        [self.videoPlayerButton removeFromSuperview];
+        [self addSubview:self.videoPlayerButton];
+        [retVal insertObject:self.videoPlayerButton atIndex:0];
+    }
+    return retVal;
 }
-%end
+// Method to handle the video player button press by showing a document picker
+%new
+- (void)videoPlayerButtonPressed:(UIButton *)sender {
+    // Traversing the responder chain to find the nearest UIViewController
+    UIResponder *responder = sender;
+    UIViewController *settingsViewController = nil;
+    while (responder) {
+        if ([responder isKindOfClass:[UIViewController class]]) {
+            settingsViewController = (UIViewController *)responder;
+            break;
+        }
+        responder = responder.nextResponder;
+    }
 
-%hook YTPlayerViewController
-%property (nonatomic, assign) float playbackRate;
-- (void)singleVideo:(id)video playbackRateDidChange:(float)rate {
-	%orig;
+    if (settingsViewController) {
+        // Present the video picker
+        UIDocumentPickerViewController *documentPicker = [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[(NSString *)UTTypeMovie.identifier, (NSString *)UTTypeVideo.identifier] inMode:UIDocumentPickerModeImport];
+        documentPicker.delegate = (id<UIDocumentPickerDelegate>)self;
+        documentPicker.allowsMultipleSelection = NO;
+        [settingsViewController presentViewController:documentPicker animated:YES completion:nil];
+    } else {
+        NSLog(@"No view controller found for the sender button.");
+    }
 }
-%end
-%end
-
-// YTStockVolumeHUD - https://github.com/lilacvibes/YTStockVolumeHUD
-%group gStockVolumeHUD
-%hook YTVolumeBarView
-- (void)volumeChanged:(id)arg1 {
-	%orig(nil);
-}
-%end
-
-%hook UIApplication 
-- (void)setSystemVolumeHUDEnabled:(BOOL)arg1 forAudioCategory:(id)arg2 {
-	%orig(true, arg2);
+// Delegate method to handle the picked video by showing the apple player
+%new
+- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    NSURL *pickedURL = [urls firstObject];
+    
+    if (pickedURL) {
+        // Use AVPlayerViewController to play the video
+        AVPlayer *player = [AVPlayer playerWithURL:pickedURL];
+        AVPlayerViewController *playerViewController = [[AVPlayerViewController alloc] init];
+        playerViewController.player = player;
+        
+        // Get the root view controller
+        UIViewController *presentingViewController = [UIApplication sharedApplication].keyWindow.rootViewController;
+        // Present the Video Player
+        if (presentingViewController) {
+            [presentingViewController presentViewController:playerViewController animated:YES completion:^{
+                [player play];
+            }];
+        } else {
+            // Handle case where no view controller was found
+            NSLog(@"Error: No view controller found to present AVPlayerViewController.");
+        }
+    }
 }
 %end
 %end
@@ -537,9 +1161,9 @@ static NSData *cellDividerData = nil;
 // Miscellaneous
 %group giPadLayout // https://github.com/LillieH001/YouTube-Reborn
 %hook UIDevice
-- (long long)userInterfaceIdiom {
-    return YES;
-} 
+- (UIUserInterfaceIdiom)userInterfaceIdiom {
+    return UIUserInterfaceIdiomPad;
+}
 %end
 %hook UIStatusBarStyleAttributes
 - (long long)idiom {
@@ -560,9 +1184,9 @@ static NSData *cellDividerData = nil;
 
 %group giPhoneLayout // https://github.com/LillieH001/YouTube-Reborn
 %hook UIDevice
-- (long long)userInterfaceIdiom {
-    return NO;
-} 
+- (UIUserInterfaceIdiom)userInterfaceIdiom {
+    return UIUserInterfaceIdiomPhone;
+}
 %end
 %hook UIStatusBarStyleAttributes
 - (long long)idiom {
@@ -571,12 +1195,20 @@ static NSData *cellDividerData = nil;
 %end
 %hook UIKBTree
 - (long long)nativeIdiom {
-    return NO;
+    if ([UIApplication sharedApplication].statusBarOrientation == UIInterfaceOrientationPortrait) {
+        return NO;
+    } else {
+        return YES;
+    }
 } 
 %end
 %hook UIKBRenderer
 - (long long)assetIdiom {
-    return NO;
+    if ([UIApplication sharedApplication].statusBarOrientation == UIInterfaceOrientationPortrait) {
+        return NO;
+    } else {
+        return YES;
+    }
 } 
 %end
 %end
@@ -591,6 +1223,11 @@ static NSData *cellDividerData = nil;
 # pragma mark - ctor
 %ctor {
     %init;
+    // Access YouGroupSettings methods
+    dlopen([[NSString stringWithFormat:@"%@/Frameworks/YouGroupSettings.dylib", [[NSBundle mainBundle] bundlePath]] UTF8String], RTLD_LAZY);
+    // Access YouTube Plus methods
+    dlopen([[NSString stringWithFormat:@"%@/Frameworks/YTLite.dylib",           [[NSBundle mainBundle] bundlePath]] UTF8String], RTLD_LAZY);
+
     if (IsEnabled(@"hideCastButton_enabled")) {
         %init(gHideCastButton);
     }
@@ -611,15 +1248,6 @@ static NSData *cellDividerData = nil;
     }
     if (IsEnabled(@"ytNoModernUI_enabled")) {
         %init(gYTNoModernUI);
-    }
-    if (IsEnabled(@"disableAmbientMode_enabled")) {
-        %init(gDisableAmbientMode);
-    }
-    if (IsEnabled(@"ytSpeed_enabled")) {
-        %init(gYTSpeed);
-    }
-    if (IsEnabled(@"stockVolumeHUD_enabled")) {
-        %init(gStockVolumeHUD);
     }
     if (IsEnabled(@"disableAccountSection_enabled")) {
         %init(gDisableAccountSection);
@@ -648,14 +1276,53 @@ static NSData *cellDividerData = nil;
     if (IsEnabled(@"disableLiveChatSection_enabled")) {
         %init(gDisableLiveChatSection);
     }
-    
+    if (IsEnabled(@"hideHomeTab_enabled")) {
+        %init(gHideHomeTab);
+    }
+    if (IsEnabled(@"fixCasting_enabled")) {
+        %init(gFixCasting);
+    }
+    if (IsEnabled(@"fullscreenToTheRight_enabled")) {
+        %init(gFullscreenToTheRight);
+    }
+    if (IsEnabled(@"YTTapToSeek_enabled")) {
+        %init(gYTTapToSeek);
+    }
+    if (IsEnabled(@"disablePullToFull_enabled")) {
+        %init(gDisablePullToFull);
+    }
+    if (IsEnabled(@"disableEngagementOverlay_enabled")) {
+        %init(gDisableEngagementOverlay);
+    }
+    if (IsEnabled(@"playerGestures_enabled")) {
+        %init(gPlayerGestures);
+    }
+    if (IsEnabled(@"videoPlayerButton_enabled")) {
+        %init(gVideoPlayerButton);
+    }
 
     // Change the default value of some options
     NSArray *allKeys = [[[NSUserDefaults standardUserDefaults] dictionaryRepresentation] allKeys];
-    if (![allKeys containsObject:@"RYD-ENABLED"]) { 
-       [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"RYD-ENABLED"]; 
+    if (![allKeys containsObject:@"YTLPDidPerformFirstRunSetup"]) { 
+        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"YTLPDidPerformFirstRunSetup"];
+        // Set iSponsorBlock to default disabled
+        NSString *documentsDirectory = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+        NSString *settingsPath = [documentsDirectory stringByAppendingPathComponent:@"iSponsorBlock.plist"];
+        NSMutableDictionary *settings = [NSMutableDictionary dictionary];
+        [settings setObject:@(NO) forKey:@"enabled"];
+        [settings writeToFile:settingsPath atomically:YES];
+        // Set miscellaneous YTLitePlus features to enabled
+        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"RYD-ENABLED"]; 
+        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"YouPiPEnabled"]; 
+        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"newSettingsUI_enabled"]; 
+        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"fixCasting_enabled"]; 
+            // Default gestures as volume, brightness, seek
+        [[NSUserDefaults standardUserDefaults] setInteger:GestureModeVolume forKey:@"playerGestureTopSelection"]; 
+        [[NSUserDefaults standardUserDefaults] setInteger:GestureModeBrightness forKey:@"playerGestureMiddleSelection"]; 
+        [[NSUserDefaults standardUserDefaults] setInteger:GestureModeSeek forKey:@"playerGestureBottomSelection"]; 
+        // Default gestures options
+        [[NSUserDefaults standardUserDefaults] setFloat:20.0 forKey:@"playerGesturesDeadzone"]; 
+        [[NSUserDefaults standardUserDefaults] setFloat:1.0 forKey:@"playerGesturesSensitivity"]; 
+        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"playerGesturesHapticFeedback_enabled"]; 
     }
-    if (![allKeys containsObject:@"YouPiPEnabled"]) { 
-       [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"YouPiPEnabled"]; 
-	}
 }
